@@ -1,0 +1,14 @@
+# Ignore Data Directory (Contains frequently changing CSVs)
+data/
+*.csv
+
+# Ignore Trained Models (Binary files bloat the repo)
+# models/
+# *.pkl
+# *.joblib
+
+# Ignore Python Cache and Virtual Env
+__pycache__/
+*.pyc
+.venv/
+env/

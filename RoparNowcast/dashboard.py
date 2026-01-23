@@ -53,9 +53,10 @@ df['time'] = pd.to_datetime(df['time'])
 # Sort and get current prediction (first row)
 curr = df.iloc[0]
 
-# Safe access for new columns (in case CSV is old)
+# Safe access for new columns (Backwards Compatibility)
 condition = curr.get('condition', 'Processing...')
 dew_point = curr.get('dew_point', 0.0)
+rain_prob = curr.get('rain_prob', 0)  # <--- NEW: Get Probability
 
 # --- HEADER ---
 c_head_1, c_head_2 = st.columns([3, 1])
@@ -63,8 +64,13 @@ with c_head_1:
     st.title("⚡ Ropar Hyper-Local Nowcast")
     st.markdown(f"**Forecast Generated:** {curr['time'].strftime('%d-%b %H:%M')} | **Window:** Next 3 Hours")
 with c_head_2:
-    # Big Condition Badge
+    # Condition Badge
     st.markdown(f"<h2 style='text-align: center; color: #4F8BF9;'>{condition}</h2>", unsafe_allow_html=True)
+    
+    # NEW: Rain Probability Badge
+    # NEW: Rain Probability Badge (Always Show)
+    prob_color = "#FFA15A" if rain_prob > 20 else "#00CC96"  # Orange for High, Green for Low
+    st.markdown(f"<p style='text-align: center; color: {prob_color}; font-weight: bold; font-size: 1.2rem;'>☔ Chance: {int(rain_prob)}%</p>", unsafe_allow_html=True)    
     st.markdown(f"<p style='text-align: center;'>Dew Point: {dew_point:.1f}°C</p>", unsafe_allow_html=True)
 
 st.markdown("---")
@@ -90,7 +96,7 @@ with c5: render_metric(st, "Rainfall", curr['rain'], curr['rain_global'], "mm")
 st.markdown("---")
 
 # --- ROW 2: DETAILED GRAPHS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🌡️ Temp", "💧 Humidity", "⏲️ Pressure", "🌬️ Wind", "🌧️ Rain", "🔬 Physics", "🆚 Actuals"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🌡️ Temp", "💧 Humidity", "⏲️ Pressure", "🌬️ Wind", "🌧️ Rain (Prob)", "🔬 Physics", "🆚 Actuals"])
 
 def get_recent_actuals(hours=24):
     """Fetches recent actual data for comparison"""
@@ -125,21 +131,15 @@ ERROR_RATES = {
     "wind_speed": 2.0   # +/- 2 km/h per hour
 }
 
-def plot_graph(tab, var_col, glob_col, title, color, is_bar=False):
+def plot_graph(tab, var_col, glob_col, title, color):
     with tab:
         fig = go.Figure()
         
-        if is_bar:
-            fig.add_trace(go.Bar(
-                x=df['time'], y=df[var_col],
-                name='AI Nowcast', marker_color=color
-            ))
-        else:
-            fig.add_trace(go.Scatter(
-                x=df['time'], y=df[var_col],
-                mode='lines+markers', name='AI Nowcast',
-                line=dict(color=color, width=4)
-            ))
+        fig.add_trace(go.Scatter(
+            x=df['time'], y=df[var_col],
+            mode='lines+markers', name='AI Nowcast',
+            line=dict(color=color, width=4)
+        ))
         
         # Global Line (Baseline)
         if glob_col:
@@ -150,7 +150,7 @@ def plot_graph(tab, var_col, glob_col, title, color, is_bar=False):
             ))
             
         # Add Confidence Interval (Shaded Area)
-        if not is_bar and var_col in ERROR_RATES:
+        if var_col in ERROR_RATES:
             rate = ERROR_RATES[var_col]
             hours_out = df['lead_minutes'] / 60.0
             margin = hours_out * rate
@@ -158,12 +158,11 @@ def plot_graph(tab, var_col, glob_col, title, color, is_bar=False):
             upper = df[var_col] + margin
             lower = df[var_col] - margin
             
-            # Add bounds (Upper transparent, Lower filled)
+            # Add bounds
             fig.add_trace(go.Scatter(
                 x=df['time'], y=upper, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'
             ))
             
-            # Convert hex to rgba for transparency
             hex_c = color.lstrip('#')
             rgb = tuple(int(hex_c[i:i+2], 16) for i in (0, 2, 4))
             fill_color = f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.2)"
@@ -182,11 +181,53 @@ def plot_graph(tab, var_col, glob_col, title, color, is_bar=False):
         )
         st.plotly_chart(fig, use_container_width=True)
 
+# Plot Standard Graphs
 plot_graph(tab1, 'temp', 'temp_global', "Temperature Forecast", "#FF4B4B")
 plot_graph(tab2, 'humidity', 'humidity_global', "Humidity Forecast", "#00CC96")
 plot_graph(tab3, 'pressure', 'pressure_global', "Atmospheric Pressure Forecast", "#AB63FA")
 plot_graph(tab4, 'wind_speed', 'wind_speed_global', "Wind Speed Forecast", "#636EFA")
-plot_graph(tab5, 'rain', 'rain_global', "Rainfall Forecast", "#FFA15A", is_bar=True)
+
+# --- CUSTOM RAIN GRAPH (DUAL AXIS) ---
+with tab5:
+    fig_rain = go.Figure()
+    
+    # 1. Rain Amount (Left Axis - Bars)
+    fig_rain.add_trace(go.Bar(
+        x=df['time'], y=df['rain'],
+        name='Rain Amount (mm)', marker_color='#FFA15A',
+        yaxis='y1'
+    ))
+    
+    # 2. Global Amount (Left Axis - Line)
+    fig_rain.add_trace(go.Scatter(
+        x=df['time'], y=df['rain_global'],
+        mode='lines', name='Global Model (mm)',
+        line=dict(color='gray', dash='dot'),
+        yaxis='y1'
+    ))
+
+    # 3. Probability (Right Axis - Green Line)
+    if 'rain_prob' in df.columns:
+        fig_rain.add_trace(go.Scatter(
+            x=df['time'], y=df['rain_prob'],
+            mode='lines+markers', name='Rain Chance (%)',
+            line=dict(color='#00CC96', width=3),
+            yaxis='y2'
+        ))
+
+    fig_rain.update_layout(
+        title="Rainfall Forecast (Amount vs Probability)",
+        yaxis=dict(title="Amount (mm)", side="left", showgrid=True),
+        yaxis2=dict(
+            title="Probability (%)", side="right", overlaying="y", 
+            range=[0, 100], showgrid=False
+        ),
+        legend=dict(orientation="h", y=1.1),
+        height=350,
+        margin=dict(t=40, b=20, l=20, r=20),
+        hovermode="x unified"
+    )
+    st.plotly_chart(fig_rain, use_container_width=True)
 
 # TAB 6: NEW PHYSICS VIEW
 with tab6:
@@ -210,9 +251,7 @@ with tab7:
         try:
             hist_df = pd.read_csv(history_path)
             hist_df['time'] = pd.to_datetime(hist_df['time'])
-            # Filter for 1-hour lead times (Lead=60 minutes) to see short-term accuracy
             hist_1h = hist_df[hist_df['lead_minutes'] == 60].sort_values('time')
-            # Deduplicate in case of overlapping runs
             hist_1h = hist_1h.drop_duplicates(subset=['time'], keep='last')
         except Exception as e:
             st.warning(f"Error loading forecast history: {e}")
@@ -220,9 +259,7 @@ with tab7:
     if not actuals.empty:
         var_comp = st.selectbox("Select Variable", ["temp", "humidity", "pressure", "wind_speed"], index=0)
         fig_comp = go.Figure()
-        # 1. Observed Data (Black Line)
         fig_comp.add_trace(go.Scatter(x=actuals['time'], y=actuals[var_comp], name="Observed", line=dict(color='black', width=3)))
-        # 2. Historical Forecast (Blue Dotted) - What we predicted 1 hour ago
         if not hist_1h.empty:
             fig_comp.add_trace(go.Scatter(x=hist_1h['time'], y=hist_1h[var_comp], name="Forecast (1h Lead)", line=dict(color='blue', dash='dot', width=2)))
         
@@ -232,16 +269,14 @@ with tab7:
         st.warning("Could not fetch recent actuals.")
 
 # --- ROW 3: RAW DATA ---
-# --- ROW 3: RAW DATA ---
 with st.expander("📂 View Raw Data Table"):
-    # Fix: Apply formatting ONLY to numeric columns, leave Time/Text alone
     st.dataframe(
         df.style.format(
             formatter="{:.2f}", 
             subset=df.select_dtypes(include="number").columns
         )
     )
+
 # --- AUTO REFRESH ---
-# Refreshes the page every 5 minutes (300 seconds) to match the prediction cycle
 time.sleep(300)
 st.rerun()
