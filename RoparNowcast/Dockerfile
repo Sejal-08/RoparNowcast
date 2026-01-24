@@ -6,6 +6,7 @@ FROM python:3.10-slim
 # PYTHONUNBUFFERED: Prevents Python from buffering stdout and stderr
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV TZ=Asia/Kolkata
 
 # Set the working directory in the container
 WORKDIR /app
