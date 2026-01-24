@@ -341,8 +341,31 @@ def run_prediction():
 
     # 2. Log HISTORY
     history_file = os.path.join(settings.DATA_DIR, "forecast_history.csv")
-    write_header = not os.path.exists(history_file)
-    df.to_csv(history_file, mode='a', header=write_header, index=False)
+    
+    # Check if we need to migrate the schema (add new columns)
+    write_mode = 'a'
+    write_header = False
+    
+    if os.path.exists(history_file):
+        try:
+            # Read just the header
+            existing_cols = pd.read_csv(history_file, nrows=0).columns.tolist()
+            if len(existing_cols) != len(df.columns):
+                print(f"⚠️ Schema Mismatch (Old: {len(existing_cols)}, New: {len(df.columns)}). Backing up and starting fresh.")
+                os.rename(history_file, history_file + ".bak")
+                write_mode = 'w'
+                write_header = True
+            else:
+                write_header = False
+        except Exception:
+             # If file is corrupt, overwrite it
+             write_mode = 'w'
+             write_header = True
+    else:
+        write_mode = 'w'
+        write_header = True
+
+    df.to_csv(history_file, mode=write_mode, header=write_header, index=False)
     print(f"📜 History logged → {history_file}")
 
     print(df[['time', 'condition', 'rain', 'rain_prob']].head(3))
