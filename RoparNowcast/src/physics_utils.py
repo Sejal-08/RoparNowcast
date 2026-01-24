@@ -32,7 +32,8 @@ def classify_weather_state(row):
     # 1️⃣ THE SUNLIGHT OVERRIDE (Day Only)
     # ---------------------------------------------------------
     # If Sun is blazing, it is definitely Clear Day.
-    if lux > 25000:
+    # TUNED: Increased from 25k to 50k to allow bright cloudy days
+    if lux > 50000:
         return "CLEAR DAY ☀️"
 
     # ---------------------------------------------------------
@@ -56,7 +57,13 @@ def classify_weather_state(row):
     # ---------------------------------------------------------
     # 4️⃣ CLOUDY / MIST
     # ---------------------------------------------------------
-    if hum > 80.0:
+    # TUNED: Reduced strict humidity threshold from 80 -> 75
+    if hum > 75.0:
+        return "CLOUDY ☁️"
+    
+    # TUNED: Add Pressure Instability Check
+    # If pressure is dropping fast (-1.5) and it's reasonably humid (>50%), it's likely cloudy.
+    if pressure_change < -1.5 and hum > 50.0:
         return "CLOUDY ☁️"
 
     # ---------------------------------------------------------
