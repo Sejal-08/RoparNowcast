@@ -271,6 +271,7 @@ def run_prediction():
                     row[var] = (1 - ai_weight) * latest[var] + ai_weight * ai_forecast
                 else:
                     # For Rain, we trust the model directly (no nudging)
+                    # FIX: Enforce strictly non-negative rain
                     row[var] = max(0.0, ai_forecast)
             else:
                 row[var] = latest[var]
@@ -325,6 +326,10 @@ def run_prediction():
     for v in ["temp", "humidity", "wind_speed", "pressure"]:
         if v in df.columns:
             df[v] = smooth_series(df[v].values, window=5)
+
+    # FINAL SAFETY: Ensure no negative rain values exist in the final output
+    if "rain" in df.columns:
+        df["rain"] = df["rain"].clip(lower=0.0)
 
     # 1. Save LATEST Forecast (Atomic Write)
     temp_file = settings.OUTPUT_FILE + ".tmp"

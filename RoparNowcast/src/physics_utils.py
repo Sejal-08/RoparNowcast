@@ -38,10 +38,13 @@ def classify_weather_state(row):
     # ---------------------------------------------------------
     # 2️⃣ SMART RAIN CHECK
     # ---------------------------------------------------------
-    if rain > 0.5:
+    if rain >= 1.0:
         return "RAIN 🌧️"
+    elif rain >= 0.1:
+        return "DRIZZLE 🌦️"
     elif rain > 0.2 and pressure_change < -0.5:
-        return "RAIN 🌧️"
+        # Fallback for pressure drop indication even if rain is light
+        return "DRIZZLE 🌦️"
 
     # ---------------------------------------------------------
     # 3️⃣ FOG PHYSICS
