@@ -330,6 +330,8 @@ def run_prediction():
     # FINAL SAFETY: Ensure no negative rain values exist in the final output
     if "rain" in df.columns:
         df["rain"] = df["rain"].clip(lower=0.0)
+        # Clean up trace amounts: If rain < 0.1mm, force to 0.0
+        df.loc[df["rain"] < 0.1, "rain"] = 0.0
 
     # 1. Save LATEST Forecast (Atomic Write)
     temp_file = settings.OUTPUT_FILE + ".tmp"
