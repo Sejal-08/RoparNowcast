@@ -26,7 +26,7 @@ def smooth_series(x, window=5):
     return pd.Series(x).rolling(window, center=True, min_periods=1).mean().values
 
 # --------------------------------------------------
-# Live station history (FIXED: Uses MAX for Cumulative Rain)
+# Live station history (Uses MAX for Cumulative Rain)
 # --------------------------------------------------
 def get_live_history():
     end = datetime.now()
@@ -74,7 +74,7 @@ def get_live_history():
 
     latest = df.iloc[-1]
     
-    # --- CRITICAL FIX: MAX for Cumulative Rain ---
+    # Aggregation Rules
     agg_rules = {}
     for col in df.columns:
         if col == "rain":
@@ -199,7 +199,7 @@ def run_prediction():
             if var == "temp": bias[var] = max(-10, min(10, bias[var]))
 
     # --------------------------------------------------
-    # 2. Generate Forecasts
+    # 2. Generate Raw Forecasts
     # --------------------------------------------------
     base_time = issue_time.floor("1h")
     if base_time in history.index:
@@ -270,50 +270,11 @@ def run_prediction():
                     ai_weight = min(1.0, lead_min / 720.0)
                     row[var] = (1 - ai_weight) * latest[var] + ai_weight * ai_forecast
                 else:
-                    # For Rain, we trust the model directly (no nudging)
-                    # FIX: Enforce strictly non-negative rain
+                    # Raw rain prediction
                     row[var] = max(0.0, ai_forecast)
             else:
                 row[var] = latest[var]
 
-        # Physics
-        row["pressure_change_3h"] = pressure_trend
-        row["dew_point"] = calculate_dew_point(row["temp"], row["humidity"])
-        row["dew_point_depression"] = calculate_dew_point_depression(row["temp"], row["dew_point"])
-        row["light"] = fc["om_solar"] * 100
-        row["condition"] = classify_weather_state(row)
-
-        # --------------------------------------------------
-        # NEW DYNAMIC PROBABILITY LOGIC 🧠
-        # --------------------------------------------------
-        
-        # 1. Global Opinion (40% Weight)
-        global_conf = row.get("om_prob", 50)
-        
-        # 2. Local AI Opinion (40% Weight)
-        # Based on predicted Rain Amount
-        # 0.1mm = 20%, 0.5mm = 75%, 1.0mm = 100%
-        pred_rain = max(0, row["rain"])
-        local_conf = min(100, pred_rain * 150) 
-        
-        # 3. Physics Boost (20% Weight via additives)
-        physics_boost = 0
-        if pressure_trend < -1.0: physics_boost += 20
-        elif pressure_trend < -0.5: physics_boost += 10
-        
-        # Humidity Boost
-        if row["humidity"] > 98: physics_boost += 10
-        elif row["humidity"] > 90: physics_boost += 5
-        
-        # Weighted Calculation
-        final_prob = (global_conf * 0.4) + (local_conf * 0.4) + physics_boost
-        
-        # 4. Sanity Check
-        # If Physics says "CLEAR SKY" explicitly, cap the probability
-        if "CLEAR" in row["condition"]:
-            final_prob = min(final_prob, 20)
-            
-        row["rain_prob"] = int(max(0, min(100, final_prob)))
         results.append(row)
 
     df = pd.DataFrame(results)
@@ -322,43 +283,96 @@ def run_prediction():
         print("❌ No forecasts")
         return
 
-    # Post-processing smoothing
+    # --------------------------------------------------
+    # 3. Post-Processing & CLAMP (The "Reality" Fix) 🚧
+    # --------------------------------------------------
+    # First, smooth the data to remove jagged noise
     for v in ["temp", "humidity", "wind_speed", "pressure"]:
         if v in df.columns:
             df[v] = smooth_series(df[v].values, window=5)
 
-    # FINAL SAFETY: Ensure no negative rain values exist in the final output
+    # Then, FORCE physical limits (The Clamp)
+    if "humidity" in df.columns:
+        df["humidity"] = df["humidity"].clip(0.0, 100.0)  # Clamp max to 100%
+    
     if "rain" in df.columns:
-        df["rain"] = df["rain"].clip(lower=0.0)
-        # Clean up trace amounts: If rain < 0.1mm, force to 0.0
+        df["rain"] = df["rain"].clip(lower=0.0) # No negative rain
+        # Zero out tiny trace amounts (< 0.1mm) to stop "ghost" drizzles
         df.loc[df["rain"] < 0.1, "rain"] = 0.0
 
-    # 1. Save LATEST Forecast (Atomic Write)
+    # --------------------------------------------------
+    # 4. Final Physics Calculations (Re-Run on Clean Data) 🌡️
+    # --------------------------------------------------
+    # We loop again to calc Dew Point & Condition using the CORRECTED numbers
+    
+    for i, row in df.iterrows():
+        # A. Recalculate Dew Point
+        dp = calculate_dew_point(row["temp"], row["humidity"])
+        df.at[i, "dew_point"] = dp
+        df.at[i, "dew_point_depression"] = calculate_dew_point_depression(row["temp"], dp)
+        
+        # B. Get Light for Condition Check
+        # We grab the global solar value we saved earlier or fetch it again
+        # Since 'om_solar' was not in 'row' explicitly above, we use globals_df lookup
+        light_val = 0.0
+        fc_match = globals_df[globals_df["time"] == row["time"]]
+        if not fc_match.empty:
+             light_val = fc_match.iloc[0]["om_solar"] * 100 # Convert W/m2 to approx Lux/Light proxy
+        df.at[i, "light"] = light_val
+        
+        # C. Classify Condition (Now it sees 100% humidity, not 102%)
+        # Note: We must pass the UPDATED row values to the classifier
+        current_row_data = df.iloc[i].to_dict()
+        current_row_data['pressure_change_3h'] = pressure_trend # Ensure trend is passed
+        df.at[i, "condition"] = classify_weather_state(current_row_data)
+
+        # D. Probability Logic
+        global_conf = row.get("om_prob", 50)
+        pred_rain = row["rain"] # This is now clean (>= 0)
+        
+        # Local Confidence: 0.5mm = 75%, 1.0mm = 100%
+        local_conf = min(100, pred_rain * 150) 
+        
+        physics_boost = 0
+        if pressure_trend < -1.0: physics_boost += 20
+        elif pressure_trend < -0.5: physics_boost += 10
+        
+        # Humidity Boost
+        if row["humidity"] > 98: physics_boost += 10
+        elif row["humidity"] > 90: physics_boost += 5
+        
+        final_prob = (global_conf * 0.4) + (local_conf * 0.4) + physics_boost
+        
+        # Sanity Check: If Physics explicitly says CLEAR, kill the probability
+        if "CLEAR" in df.at[i, "condition"]:
+            final_prob = min(final_prob, 10) # Cap at 10%
+            
+        df.at[i, "rain_prob"] = int(max(0, min(100, final_prob)))
+        df.at[i, "pressure_change_3h"] = pressure_trend
+
+    # --------------------------------------------------
+    # 5. Save Files
+    # --------------------------------------------------
+    # Save Latest
     temp_file = settings.OUTPUT_FILE + ".tmp"
     df.to_csv(temp_file, index=False)
     os.replace(temp_file, settings.OUTPUT_FILE)
     print(f"💾 Forecast saved → {settings.OUTPUT_FILE}")
 
-    # 2. Log HISTORY
+    # Log History with Schema Protection
     history_file = os.path.join(settings.DATA_DIR, "forecast_history.csv")
-    
-    # Check if we need to migrate the schema (add new columns)
     write_mode = 'a'
     write_header = False
     
     if os.path.exists(history_file):
         try:
-            # Read just the header
             existing_cols = pd.read_csv(history_file, nrows=0).columns.tolist()
             if len(existing_cols) != len(df.columns):
-                print(f"⚠️ Schema Mismatch (Old: {len(existing_cols)}, New: {len(df.columns)}). Backing up and starting fresh.")
+                print(f"⚠️ Schema Change Detected. Backing up old history.")
                 os.rename(history_file, history_file + ".bak")
                 write_mode = 'w'
                 write_header = True
-            else:
-                write_header = False
         except Exception:
-             # If file is corrupt, overwrite it
              write_mode = 'w'
              write_header = True
     else:
@@ -368,7 +382,7 @@ def run_prediction():
     df.to_csv(history_file, mode=write_mode, header=write_header, index=False)
     print(f"📜 History logged → {history_file}")
 
-    print(df[['time', 'condition', 'rain', 'rain_prob']].head(3))
+    print(df[['time', 'condition', 'rain', 'rain_prob', 'humidity']].head(3))
 
 if __name__ == "__main__":
     run_prediction()

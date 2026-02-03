@@ -20,7 +20,7 @@ def classify_weather_state(row):
     """
     Determines weather condition with Day/Night distinction.
     """
-    # Extract variables safely
+    # Extract variables safely with defaults
     rain = row.get('rain', 0)
     dpd = row.get('dew_point_depression', 10)
     wind = row.get('wind_speed', 0)
@@ -29,15 +29,23 @@ def classify_weather_state(row):
     pressure_change = row.get('pressure_change_3h', 0)
 
     # ---------------------------------------------------------
-    # 1️⃣ THE SUNLIGHT OVERRIDE (Day Only)
+    # 1️⃣ SUPER-SATURATION CHECK (The "Whiteout" Fix) 🌫️
     # ---------------------------------------------------------
-    # If Sun is blazing, it is definitely Clear Day.
-    # TUNED: Increased from 25k to 50k to allow bright cloudy days
-    if lux > 50000:
-        return "CLEAR DAY ☀️"
+    # If the air is fully saturated, it is PHYSICALLY IMPOSSIBLE to be Clear.
+    # We check this FIRST to override the Sunlight sensor (White Fog reflects light).
+    
+    is_saturated = (hum >= 98) or (dpd < 0.5)
+    
+    if is_saturated:
+        # If it's raining significantly, it's Rain.
+        if rain > 0.5:
+            return "RAIN 🌧️"
+        # Otherwise, it MUST be Fog (even if it's bright).
+        else:
+            return "FOG 🌫️"
 
     # ---------------------------------------------------------
-    # 2️⃣ SMART RAIN CHECK
+    # 2️⃣ SMART RAIN CHECK 🌧️
     # ---------------------------------------------------------
     if rain >= 1.0:
         return "RAIN 🌧️"
@@ -48,26 +56,33 @@ def classify_weather_state(row):
         return "DRIZZLE 🌦️"
 
     # ---------------------------------------------------------
-    # 3️⃣ FOG PHYSICS
+    # 3️⃣ SUNLIGHT OVERRIDE (Day Only) ☀️
     # ---------------------------------------------------------
-    # Fog requires low light. If it's night (lux < 50), Fog is possible.
-    if hum >= 97 and dpd < 2.0 and wind < 2.5 and lux < 5000:
+    # If Sun is blazing AND we passed the saturation check above, 
+    # then it is definitely a Clear Day.
+    if lux > 50000:
+        return "CLEAR DAY ☀️"
+
+    # ---------------------------------------------------------
+    # 4️⃣ STANDARD FOG PHYSICS (For lower light/morning fog) 🌫️
+    # ---------------------------------------------------------
+    # Standard fog check for non-saturated but misty conditions.
+    if hum >= 97 and dpd < 2.0 and wind < 2.5:
         return "FOG 🌫️"
 
     # ---------------------------------------------------------
-    # 4️⃣ CLOUDY / MIST
+    # 5️⃣ CLOUDY / MIST ☁️
     # ---------------------------------------------------------
-    # TUNED: Reduced strict humidity threshold from 80 -> 75
+    # If humidity is high but not saturated.
     if hum > 75.0:
         return "CLOUDY ☁️"
     
-    # TUNED: Add Pressure Instability Check
-    # If pressure is dropping fast (-1.5) and it's reasonably humid (>50%), it's likely cloudy.
+    # Pressure Instability Check: Falling pressure usually means clouds.
     if pressure_change < -1.5 and hum > 50.0:
         return "CLOUDY ☁️"
 
     # ---------------------------------------------------------
-    # 5️⃣ DEFAULT: CLEAR (Day vs Night Split)
+    # 6️⃣ DEFAULT: CLEAR (Day vs Night Split) 🌙/☀️
     # ---------------------------------------------------------
     # If we reached here, the sky is clear.
     # Check Lux to decide if it's Day or Night.
